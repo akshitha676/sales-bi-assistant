@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sales BI Assistant</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1c2430; --muted:#6a7482; --line:#e3e7ec; --accent:#2f5bea; --bad:#b3261e; --badbg:#fdecea; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171c; --card:#1d2128; --ink:#e8ebf0; --muted:#9aa4b2; --line:#2c333d; --accent:#7b9cff; --bad:#ff9b94; --badbg:#3a1f1d; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 system-ui, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  form { display:flex; gap:8px; }
+  input[type=text] { flex:1; padding:12px 14px; font-size:1rem; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--ink); }
+  button { padding:12px 18px; font-size:1rem; border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
+  button:disabled { opacity:.6; cursor:wait; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0 20px; }
+  .chip { background:var(--card); color:var(--ink); border:1px solid var(--line); padding:6px 12px; border-radius:999px; font-size:.85rem; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px 18px; margin-bottom:16px; }
+  .answer { font-size:1.15rem; margin:0 0 12px; }
+  .figures { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:12px; }
+  .fig { border:1px solid var(--line); border-radius:8px; padding:8px 12px; }
+  .fig small { display:block; color:var(--muted); font-size:.75rem; }
+  .fig b { font-size:1.05rem; }
+  table { width:100%; border-collapse:collapse; font-size:.9rem; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:600; }
+  td.num, th.num { text-align:right; font-variant-numeric: tabular-nums; }
+  .bar { height:6px; background:var(--accent); border-radius:3px; margin-top:4px; }
+  .error { background:var(--badbg); color:var(--bad); border-color:var(--bad); }
+  .note { color:var(--muted); font-size:.82rem; margin:4px 0; }
+  details { margin-top:12px; font-size:.85rem; color:var(--muted); }
+  code, pre { font-family: ui-monospace, monospace; font-size:.8rem; white-space:pre-wrap; word-break:break-word; }
+  h2 { font-size:.8rem; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:16px 0 6px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Sales BI Assistant</h1>
+  <p class="sub">Ask a question about the sales data in plain English. Answers come from database queries, not from the AI's memory.</p>
+
+  <form id="form">
+    <input type="text" id="q" placeholder="e.g. Which region generated the highest sales?" maxlength="300" autofocus required>
+    <button id="go" type="submit">Ask</button>
+  </form>
+  <div class="chips" id="chips"></div>
+  <div id="out"></div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt = (k, v) => (typeof v === "number" && !k.includes("orders") && !k.includes("units")) ? v.toLocaleString(undefined, {maximumFractionDigits: 2}) : v;
+
+fetch("/api/meta").then(r => r.json()).then(m => {
+  $("chips").innerHTML = m.supported_questions.map(q => `<button type="button" class="chip">${esc(q)}</button>`).join("");
+  document.querySelectorAll(".chip").forEach(c => c.onclick = () => { $("q").value = c.textContent; $("form").requestSubmit(); });
+}).catch(() => {});
+
+$("form").onsubmit = async (e) => {
+  e.preventDefault();
+  $("go").disabled = true;
+  $("out").innerHTML = `<div class="card">Thinking…</div>`;
+  try {
+    const res = await fetch("/ask", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({question: $("q").value}) });
+    const data = await res.json();
+    $("out").innerHTML = res.ok ? renderResult(data) : renderError(data);
+  } catch (err) {
+    $("out").innerHTML = `<div class="card error">Could not reach the server. Is it running?</div>`;
+  } finally { $("go").disabled = false; }
+};
+
+function renderError(d) {
+  const e = d.error || {message: "Unexpected error"};
+  const hints = e.supported_questions ? `<p class="note">Try one of:</p><ul>${e.supported_questions.map(q => `<li>${esc(q)}</li>`).join("")}</ul>` : "";
+  return `<div class="card error"><b>${esc(e.message)}</b>${hints}</div>`;
+}
+
+function renderResult(d) {
+  const figs = Object.entries(d.figures || {}).map(([k, v]) => `<div class="fig"><small>${esc(k)}</small><b>${esc(v)}</b></div>`).join("");
+  const cols = d.columns || [];
+  const numCol = cols.includes("net_revenue") ? "net_revenue" : null;
+  const max = numCol ? Math.max(...d.rows.map(r => r[numCol])) : 0;
+  const isNum = (c) => d.rows.some(r => typeof r[c] === "number");
+  const head = cols.map(c => `<th class="${isNum(c) ? "num" : ""}">${esc(c.replaceAll("_", " "))}</th>`).join("");
+  const body = d.rows.map(r => `<tr>${cols.map(c => {
+    const bar = (c === numCol && d.rows.length > 1) ? `<div class="bar" style="width:${max ? (r[c] / max * 100) : 0}%"></div>` : "";
+    return `<td class="${isNum(c) ? "num" : ""}">${esc(r[c] === null ? "–" : fmt(c, r[c]))}${bar}</td>`;
+  }).join("")}</tr>`).join("");
+  const notes = (d.notes || []).concat(d.warnings || []).map(n => `<p class="note">• ${esc(n)}</p>`).join("");
+  return `<div class="card">
+    <p class="answer">${esc(d.answer)}</p>
+    <div class="figures">${figs}</div>
+    <h2>Supporting data</h2>
+    <table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>
+    ${notes}
+    <details><summary>How this was computed</summary>
+      <p>Understood by: <b>${esc(d.interpreter)}</b> &rarr; intent <code>${esc(d.intent)}</code></p>
+      <pre>${esc(d.sql)}</pre>
+      <p>Parameters: <code>${esc(JSON.stringify(d.params))}</code></p>
+    </details>
+  </div>`;
+}
+</script>
+</body>
+</html>
